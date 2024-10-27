@@ -13,7 +13,7 @@ This project demonstrates a Kubernetes-based leader election mechanism using Go.
 ## Setup
 
 1. Clone the repository:   ```
-   git clone https://github.com/yourusername/leader-election-service.git
+   git clone https://github.com/adityavit/leader-election-service.git
    cd leader-election-service   ```
 
 2. Install dependencies:   ```
