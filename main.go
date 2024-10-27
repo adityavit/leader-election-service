@@ -8,16 +8,26 @@ import (
 	"sync"
 	"time"
 
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
+	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
+	"k8s.io/client-go/tools/record"
+	"k8s.io/klog/v2"
 )
 
 var (
 	isLeader bool
 	mu       sync.Mutex
+)
+
+const (
+	eventLeaderElected = "LeaderElected"
+	eventLeaderStopped = "LeaderStopped"
 )
 
 func main() {
@@ -37,6 +47,11 @@ func main() {
 		panic(err.Error())
 	}
 
+	// Create an event broadcaster
+	eventBroadcaster := record.NewBroadcaster()
+	eventBroadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{Interface: clientset.CoreV1().Events("default")})
+	recorder := eventBroadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: "leader-election"})
+
 	// Create a new resource lock
 	lock := &resourcelock.LeaseLock{
 		LeaseMeta: metav1.ObjectMeta{
@@ -45,10 +60,15 @@ func main() {
 		},
 		Client: clientset.CoordinationV1(),
 		LockConfig: resourcelock.ResourceLockConfig{
-			Identity: podName,
+			Identity:      podName,
+			EventRecorder: recorder,
 		},
 	}
-
+	leaseRef := &v1.ObjectReference{
+		Kind:      "Lease",
+		Namespace: lock.LeaseMeta.Namespace,
+		Name:      lock.LeaseMeta.Name,
+	}
 	// Start leader election
 	leaderelection.RunOrDie(context.Background(), leaderelection.LeaderElectionConfig{
 		Lock:            lock,
@@ -61,20 +81,23 @@ func main() {
 				mu.Lock()
 				isLeader = true
 				mu.Unlock()
+				recorder.Eventf(leaseRef, v1.EventTypeNormal, eventLeaderElected, "Pod %s became leader", podName)
+				klog.Infof("Pod %s became leader", podName)
 				startHTTPServer()
 			},
 			OnStoppedLeading: func() {
 				mu.Lock()
 				isLeader = false
 				mu.Unlock()
-				fmt.Printf("Leader lost: %s\n", podName)
+				recorder.Eventf(leaseRef, v1.EventTypeNormal, eventLeaderStopped, "Pod %s stopped leading", podName)
+				klog.Infof("Pod %s stopped leading", podName)
 				os.Exit(0)
 			},
 			OnNewLeader: func(identity string) {
 				if identity == podName {
-					fmt.Printf("Still the leader: %s\n", identity)
+					klog.Infof("Still the leader: %s", identity)
 				} else {
-					fmt.Printf("New leader elected: %s\n", identity)
+					klog.Infof("New leader elected: %s", identity)
 				}
 			},
 		},
